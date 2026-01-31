@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: #333; color: white; padding: 10px 20px; border-radius: 5px; }
+        h2 { border-bottom: 2px solid #ccc; padding-bottom: 5px; margin-top: 30px; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 0.9em; }
+        th { background-color: #007bff; color: white; }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+
+        .sql-box { background: white; padding: 15px; border: 1px solid #ccc; margin-top: 20px; }
+        textarea { width: 100%; height: 80px; font-family: monospace; }
+        .btn-run { background: #28a745; color: white; border: none; padding: 10px 20px; cursor: pointer; margin-top: 5px; }
+        .logout { color: #ff6b6b; text-decoration: none; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>RelayChat Admin</h1>
+        <a href="/hero/logout" class="logout">Logout</a>
+    </div>
+
+    <!-- SQL QUERY SECTION -->
+    <div class="sql-box">
+        <h3>⚡ Run SQL Query</h3>
+        <form action="/hero/query" method="post">
+            <textarea name="sql_query" placeholder="SELECT * FROM sessions WHERE ...">{{ last_query }}</textarea>
+            <br>
+            <button type="submit" class="btn-run">Execute Query</button>
+        </form>
+
+        {% if query_error %}
+            <div style="color: red; margin-top: 10px;"><strong>Result:</strong> {{ query_error }}</div>
+        {% endif %}
+
+        {% if query_result %}
+            <h4>Query Result:</h4>
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            {% for col in query_columns %}
+                                <th>{{ col }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in query_result %}
+                            <tr>
+                                {% for cell in row %}
+                                    <td>{{ cell }}</td>
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- MATCHES TABLE -->
+    <h2>Recent Matches</h2>
+    <div style="overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th><th>Match UUID</th><th>User A</th><th>User B</th><th>Started</th><th>Ended</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in matches %}
+                <tr>
+                    <td>{{ m.id }}</td>
+                    <td>{{ m.match_id }}</td>
+                    <td>{{ m.user_a }}</td>
+                    <td>{{ m.user_b }}</td>
+                    <td>{{ m.started_at }}</td>
+                    <td>{{ m.ended_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- SESSIONS TABLE -->
+    <h2>Recent Sessions</h2>
+    <div style="overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th><th>User Token</th><th>IP Address</th><th>Connected</th><th>Disconnected</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in sessions %}
+                <tr>
+                    <td>{{ s.id }}</td>
+                    <td>{{ s.user_token }}</td>
+                    <td>{{ s.ip_address }}</td>
+                    <td>{{ s.connected_at }}</td>
+                    <td>{{ s.disconnected_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</body>
+</html>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Dark Background -->
+  <rect x="0" y="0" width="64" height="64" rx="16" fill="#18181b"/>
+  
+  <!-- Chat Bubble Outline -->
+  <path d="M12 32 C12 21 21 12 32 12 C43 12 52 21 52 32 C52 37 50 41 47 44 L48 52 L40 49 C37 51 34 52 32 52 C21 52 12 43 12 32 Z" 
+        fill="#27272a" stroke="#3b82f6" stroke-width="3"/>
+        
+  <!-- Lightning Bolt -->
+  <path d="M34 18 L24 34 H32 L30 46 L40 30 H32 L34 18 Z" 
+        fill="#eab308" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+</svg>
