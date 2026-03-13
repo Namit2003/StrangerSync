@@ -186,7 +186,7 @@ function syncMicUI(isEnabled) {
 // --- 4. WebSocket Connection ---
 function connectWebSocket() {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const existingToken = getCookie("relaychat_uid");
+    const existingToken = getCookie("strangersync_uid");
     var wsUrl = `${protocol}://${window.location.host}/ws`;
 
     if (existingToken) {
@@ -218,7 +218,7 @@ async function handleServerMessage(data) {
     switch (data.status) {
         case "identity":
             console.log("Identity confirmed:", data.user_id);
-            setCookie("relaychat_uid", data.user_id, 30);
+            setCookie("strangersync_uid", data.user_id, 30);
             break;
 
         case "waiting":
