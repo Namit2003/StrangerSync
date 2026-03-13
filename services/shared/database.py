@@ -11,15 +11,17 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Database configuration
-DB_HOST = os.getenv("DATABASE_HOST", "localhost")
-DB_PORT = os.getenv("DATABASE_PORT", "5432")
-DB_NAME = os.getenv("DATABASE_NAME", "strangersync")
-DB_USER = os.getenv("DATABASE_USER", "postgres")
-DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "postgres")
-
-# PostgreSQL connection string
-DATABASE_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Support DATABASE_URL directly (Railway, Render, etc.) or individual vars for local dev
+_raw_url = os.getenv("DATABASE_URL")
+if _raw_url:
+    DATABASE_URL = _raw_url.replace("postgres://", "postgresql+psycopg://", 1).replace("postgresql://", "postgresql+psycopg://", 1)
+else:
+    DB_HOST = os.getenv("DATABASE_HOST", "localhost")
+    DB_PORT = os.getenv("DATABASE_PORT", "5432")
+    DB_NAME = os.getenv("DATABASE_NAME", "strangersync")
+    DB_USER = os.getenv("DATABASE_USER", "postgres")
+    DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "postgres")
+    DATABASE_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Create engine
 engine = create_engine(
