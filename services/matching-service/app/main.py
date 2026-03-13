@@ -23,14 +23,18 @@ app = FastAPI(title="Matching Service", version="1.0.0")
 # Configuration
 config = get_service_config()
 
-# Redis connection with in-memory fallback
+# Redis connection with in-memory fallback — supports REDIS_URL (Railway) or individual host/port vars
 redis_client = None
 try:
-    redis_client = redis.Redis(
-        host=config["redis_host"],
-        port=int(config["redis_port"]),
-        decode_responses=True
-    )
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+    else:
+        redis_client = redis.Redis(
+            host=config["redis_host"],
+            port=int(config["redis_port"]),
+            decode_responses=True
+        )
     redis_client.ping()
     print("✅ Connected to Redis for distributed queue")
 except:
