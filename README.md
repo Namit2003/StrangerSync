@@ -4,6 +4,10 @@ A random video chat application (like Omegle) built using **microservices archit
 
 This project was made as a **Final Assignment** for my undergraduate course **"Microservice Architecture and Programming"** at university.
 
+## Live Demo
+
+Deployed app: [StrangerSync](https://strangersync-production.up.railway.app/)
+
 ## what is this?
 
 So basically its a peer-to-peer video chat app where you can connect with random strangers. The whole point was to learn microservices so I broke down this app into multiple services that talk to each other.
