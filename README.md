@@ -92,16 +92,6 @@ StrangerSync/
 - Camera flip (front/back)
 - Mute/unmute
 
-## Deploying
-
-Two separate Fly.io apps. Deploy signaling first since core needs its URL:
-
-```bash
-fly deploy --config fly-signaling.toml
-fly secrets set SIGNALING_WS_URL=wss://strangersync-signaling.fly.dev/ws --app strangersync-core
-fly deploy --config fly-core.toml
-```
-
 ---
 
 Made for my Microservices class project 🎓
