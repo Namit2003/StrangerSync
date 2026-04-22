@@ -6,7 +6,7 @@ This project was made as a **Final Assignment** for my undergraduate course **"M
 
 ## Live Demo
 
-Deployed app: [StrangerSync](https://strangersync-production.up.railway.app/)
+Deployed on Fly.io: [StrangerSync](https://strangersync-core.fly.dev)
 
 ## what is this?
 
@@ -17,110 +17,90 @@ So basically its a peer-to-peer video chat app where you can connect with random
 Here's how everything connects together:
 
 ```
-                    ┌─────────────────────┐
-                    │   API Gateway       │
-                    │      :8000          │
-                    └──────────┬──────────┘
-                               │
-        ┌──────────────────────┼─────────────────────┐
-        │                      │                     │
-   ┌────▼────┐          ┌──────▼──────┐      ┌──────▼──────┐
-   │ Admin   │          │  Signaling  │      │  Matching   │
-   │  :8003  │          │    :8001    │      │    :8002    │
-   └────┬────┘          └──────┬──────┘      └──────┬──────┘
-        │                      │                     │
-        └──────────────────────┼─────────────────────┘
-                               │
-                        ┌──────▼──────┐
-                        │    User     │
-                        │   :8004     │
-                        └──────┬──────┘
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         │                     │                     │
-    ┌────▼─────┐         ┌─────▼─────┐       ┌──────▼──────┐
-    │PostgreSQL│         │   Redis   │       │   Static    │
-    │  :5432   │         │   :6379   │       │   Files     │
-    └──────────┘         └───────────┘       └─────────────┘
+Browser
+  │
+  ▼
+Fly.io Proxy (HTTPS/WSS)
+  │
+  ├── /ws  ──────────────────▶ signaling-service  (WebSocket + Matching)
+  └── /*   ──────────────────▶ core-service        (Static files + User API)
+                                      │
+                               ┌──────▼──────┐
+                               │  PostgreSQL  │
+                               │  (Fly.io)    │
+                               └─────────────┘
 ```
 
-## The Microservices
+## The Services
 
-So we have 5 main microservices:
+Ended up with 2 main services after merging some stuff together:
 
-### 1. API Gateway (Port 8000)
-The main entry point for everything. All requests go through here first and then it routes them to the right service. Also does health checks on other services and aggregates stats from everywhere.
+### 1. Signaling Service
+The most important one. Handles all WebSocket connections, WebRTC signaling (offer/answer/ICE candidates) AND the matching queue. When someone clicks find match it puts them in a queue and pairs them with the next person who also clicks it. All in memory with a single machine so the queue stays consistent.
 
-### 2. User Service (Port 8004)
-Handles anything related to user sessions - creating users, tracking who's online, who disconnected etc. Uses Redis for caching active users so its fast.
-
-### 3. Matching Service (Port 8002)  
-This is where the magic happens for pairing random users together. Has a waiting queue in Redis and a matching algorithm. When 2 people are looking for a match, it pairs them up.
-
-### 4. Signaling Service (Port 8001)
-Manages all the WebSocket connections for real-time stuff. Also handles WebRTC signaling - basically relays the offer/answer/ICE candidates between peers so they can establish a video connection.
-
-### 5. Admin Service (Port 8003)
-A simple admin dashboard to see whats going on - how many sessions, how many matches, etc. Has login authentication too.
+### 2. Core Service
+Serves the frontend (HTML/CSS/JS) and handles user session tracking in the database. Also has a `/config.js` endpoint that tells the frontend where the signaling service is so the WebSocket connects to the right place.
 
 ## Tech Stack
 
-- **FastAPI** - Python web framework for all the services
-- **PostgreSQL** - Database (using shared database pattern for simplicity)
-- **Redis** - For caching and pub/sub messaging between services  
+- **FastAPI** - Python web framework for both services
+- **PostgreSQL** - Database for session and match logs
 - **WebSockets** - Real-time communication
 - **WebRTC** - Peer to peer video/audio
-- **Docker & Docker Compose** - Containerization
+- **Fly.io** - Deployment (2 machines, fits in free tier)
 
 ## Microservice Patterns I Used
 
 These are the patterns I learned in class and implemented here:
 
-- **API Gateway Pattern** - single entry point that routes to services
-- **Event-Driven Architecture** - services communicate via Redis pub/sub
-- **Shared Database** - all services share same postgres db (easier for learning)
-- **Service Discovery** - services find each other via environment variables
+- **Service Decomposition** - split by business capability (real-time vs HTTP)
+- **Shared Database** - both services share same postgres db (easier for learning)
+- **API Gateway Pattern** - core service acts as the HTTP entry point
+- **Config as a Service** - `/config.js` endpoint for dynamic frontend config
 
 ## Project Structure
 
 ```
 StrangerSync/
 ├── services/
-│   ├── shared/              # Shared code between services
-│   │   ├── database.py      # DB models & connection
-│   │   └── utils.py         # Helper functions
-│   ├── api-gateway/         # Port 8000
-│   ├── admin-service/       # Port 8003
-│   ├── matching-service/    # Port 8002
-│   ├── signaling-service/   # Port 8001
-│   └── user-service/        # Port 8004
-├── app/                     # Frontend application
-│   ├── templates/           # HTML templates
-│   └── main.py              
-├── static/                  # CSS, JS files
-├── docker-compose.yml       # All services containerized
+│   ├── shared/                  # Shared DB models between services
+│   │   ├── database.py          # DB models & connection
+│   │   └── utils.py             # Helper functions
+│   ├── signaling-service/       # WebSocket + WebRTC + Matching
+│   └── core-service/            # Static files + User session API
+├── static/                      # Frontend (HTML, CSS, JS)
+├── fly-signaling.toml           # Fly.io config for signaling
+├── fly-core.toml                # Fly.io config for core
 └── README.md
 ```
 
 ## How It Works
 
-1. User opens the app → goes through API Gateway
-2. API Gateway creates a user session via User Service
-3. User clicks "Find Match" → Signaling Service talks to Matching Service
-4. Matching Service puts them in queue, finds another waiting user, pairs them up
-5. Both users get notified through WebSocket
-6. WebRTC signaling happens through Signaling Service
+1. User opens the app → core service serves the HTML
+2. Browser loads `/config.js` → gets the signaling service WebSocket URL
+3. Browser connects WebSocket to signaling service
+4. User clicks "Find Match" → signaling service puts them in queue
+5. Next person who also clicks gets paired with them
+6. Both users get notified, WebRTC signaling happens through the same WebSocket connection
 7. Direct peer-to-peer video connection established!
 
 ## Features
 
 - Random stranger matching
 - Video and audio chat (peer to peer)
-- Text chat too
+- Text chat
 - Camera flip (front/back)
 - Mute/unmute
-- Admin dashboard with stats
-- Health monitoring for all services
+
+## Deploying
+
+Two separate Fly.io apps. Deploy signaling first since core needs its URL:
+
+```bash
+fly deploy --config fly-signaling.toml
+fly secrets set SIGNALING_WS_URL=wss://strangersync-signaling.fly.dev/ws --app strangersync-core
+fly deploy --config fly-core.toml
+```
 
 ---
 

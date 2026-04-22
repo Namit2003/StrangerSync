@@ -185,9 +185,14 @@ function syncMicUI(isEnabled) {
 
 // --- 4. WebSocket Connection ---
 function connectWebSocket() {
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const existingToken = getCookie("strangersync_uid");
-    var wsUrl = `${protocol}://${window.location.host}/ws`;
+    var wsUrl;
+    if (window.SIGNALING_URL) {
+        wsUrl = window.SIGNALING_URL;
+    } else {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        wsUrl = `${protocol}://${window.location.host}/ws`;
+    }
 
     if (existingToken) {
         wsUrl += `?token=${existingToken}`;

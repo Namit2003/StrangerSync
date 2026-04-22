@@ -1,0 +1,25 @@
+# fly.toml app configuration file generated for strangersync-signaling on 2026-04-22T01:36:35-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'strangersync-signaling'
+primary_region = 'sjc'
+
+[build]
+  dockerfile = 'services/signaling-service/Dockerfile'
+
+[env]
+  PORT = '8001'
+
+[http_service]
+  internal_port = 8001
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256

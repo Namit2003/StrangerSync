@@ -1,12 +1,13 @@
-# Use Python 3.11
 FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY services/core-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app /app/app
+COPY services/shared /app/shared
+COPY services/core-service/app /app/app
+COPY static /app/static
 
 EXPOSE 8000
 

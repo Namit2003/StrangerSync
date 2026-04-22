@@ -1,234 +1,277 @@
 """
-Signaling Service - Microservice for WebSocket connections and WebRTC signaling
+Signaling Service - WebSocket connections, WebRTC signaling, and user matching
 Port: 8001
 """
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import Dict
+from datetime import datetime
+from typing import Dict, List, Optional
 import sys
 import os
-import json
-import httpx
+import uuid
+import redis
 
-# Add parent directory to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
+from shared.database import SessionLog, MatchLog, get_db_session, init_db
 from shared.utils import get_service_config
 
-app = FastAPI(title="Signaling Service", version="1.0.0")
+app = FastAPI(title="Signaling Service", version="2.0.0")
 
-# Configuration
 config = get_service_config()
-USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://localhost:8004")
-MATCHING_SERVICE_URL = os.getenv("MATCHING_SERVICE_URL", "http://localhost:8002")
 
-# Connection manager
+# Redis with in-memory fallback
+redis_client = None
+try:
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+    else:
+        redis_client = redis.Redis(
+            host=config["redis_host"],
+            port=int(config["redis_port"]),
+            decode_responses=True
+        )
+    redis_client.ping()
+    print("✅ Connected to Redis for distributed queue")
+except Exception:
+    print("⚠️ Redis unavailable - using in-memory queue")
+    redis_client = None
+
+# In-memory fallback state
+memory_queue: List[str] = []
+memory_matches: Dict[str, str] = {}  # user_token -> peer_token
+
+
+# --- Matching helpers (inline, no HTTP calls) ---
+
+def _queue_find_match(user_token: str) -> dict:
+    """Find or queue a match. Returns {status, peer_token?, match_id?}"""
+    if redis_client:
+        # Already matched?
+        existing = redis_client.get(f"user_match:{user_token}")
+        if existing:
+            return {"status": "already_matched", "peer_token": existing}
+
+        peer_token = redis_client.lpop("waiting_queue")
+        if peer_token and peer_token != user_token:
+            match_id = str(uuid.uuid4())
+            redis_client.set(f"user_match:{user_token}", peer_token, ex=3600)
+            redis_client.set(f"user_match:{peer_token}", user_token, ex=3600)
+            _write_match_log(match_id, user_token, peer_token)
+            return {"status": "matched", "peer_token": peer_token, "match_id": match_id}
+        else:
+            redis_client.rpush("waiting_queue", user_token)
+            return {"status": "waiting"}
+    else:
+        if user_token in memory_matches:
+            return {"status": "already_matched", "peer_token": memory_matches[user_token]}
+
+        if memory_queue and memory_queue[0] != user_token:
+            peer_token = memory_queue.pop(0)
+            match_id = str(uuid.uuid4())
+            memory_matches[user_token] = peer_token
+            memory_matches[peer_token] = user_token
+            _write_match_log(match_id, user_token, peer_token)
+            return {"status": "matched", "peer_token": peer_token, "match_id": match_id}
+        else:
+            if user_token not in memory_queue:
+                memory_queue.append(user_token)
+            return {"status": "waiting"}
+
+
+def _queue_leave_match(user_token: str) -> Optional[str]:
+    """Clean up match/queue state. Returns peer_token if was in a match."""
+    if redis_client:
+        peer_token = redis_client.get(f"user_match:{user_token}")
+        if peer_token:
+            redis_client.delete(f"user_match:{user_token}")
+            redis_client.delete(f"user_match:{peer_token}")
+            _end_match_log(user_token, peer_token)
+            return peer_token
+        redis_client.lrem("waiting_queue", 0, user_token)
+    else:
+        peer_token = memory_matches.pop(user_token, None)
+        if peer_token:
+            memory_matches.pop(peer_token, None)
+            _end_match_log(user_token, peer_token)
+            return peer_token
+        if user_token in memory_queue:
+            memory_queue.remove(user_token)
+    return None
+
+
+def _write_match_log(match_id: str, user_a: str, user_b: str):
+    db = get_db_session()
+    try:
+        db.add(MatchLog(match_id=match_id, user_a=user_a, user_b=user_b, started_at=datetime.utcnow()))
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _end_match_log(user_a: str, user_b: str):
+    db = get_db_session()
+    try:
+        match = db.query(MatchLog).filter(
+            ((MatchLog.user_a == user_a) & (MatchLog.user_b == user_b)) |
+            ((MatchLog.user_a == user_b) & (MatchLog.user_b == user_a)),
+            MatchLog.ended_at == None
+        ).first()
+        if match:
+            match.ended_at = datetime.utcnow()
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _log_session_connect(user_token: str):
+    db = get_db_session()
+    try:
+        db.add(SessionLog(user_token=user_token, ip_address="ws_client", connected_at=datetime.utcnow()))
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _log_session_disconnect(user_token: str):
+    db = get_db_session()
+    try:
+        sessions = db.query(SessionLog).filter(
+            SessionLog.user_token == user_token,
+            SessionLog.disconnected_at == None
+        ).all()
+        for s in sessions:
+            s.disconnected_at = datetime.utcnow()
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+# --- Connection manager ---
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
-        self.user_matches: Dict[str, str] = {}  # user_id -> peer_id
-    
+        self.user_matches: Dict[str, str] = {}  # ws-level match map (user_id -> peer_id)
+
     async def connect(self, websocket: WebSocket, user_id: str):
-        """Accept and store WebSocket connection"""
         await websocket.accept()
         self.active_connections[user_id] = websocket
-        print(f"✅ Client {user_id} connected. Total: {len(self.active_connections)}")
-        
-        # Notify User Service
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{USER_SERVICE_URL}/users",
-                    json={"user_token": user_id, "ip_address": "ws_client"},
-                    timeout=2.0
-                )
-        except Exception as e:
-            print(f"⚠️ User Service unavailable: {e}")
-    
+        _log_session_connect(user_id)
+        print(f"✅ {user_id} connected. Total: {len(self.active_connections)}")
+
     def disconnect(self, user_id: str):
-        """Remove connection"""
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-        if user_id in self.user_matches:
-            del self.user_matches[user_id]
-        print(f"❌ Client {user_id} disconnected. Remaining: {len(self.active_connections)}")
-        
-        # Notify User Service
-        try:
-            httpx.post(
-                f"{USER_SERVICE_URL}/users/{user_id}/disconnect",
-                timeout=2.0
-            )
-        except:
-            pass
-    
-    async def send_personal_message(self, message: dict, user_id: str):
-        """Send message to specific user"""
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_json(message)
-    
-    async def broadcast(self, message: dict):
-        """Broadcast to all connected users"""
-        for connection in self.active_connections.values():
-            await connection.send_json(message)
-    
+        self.active_connections.pop(user_id, None)
+        self.user_matches.pop(user_id, None)
+        _log_session_disconnect(user_id)
+        print(f"❌ {user_id} disconnected. Remaining: {len(self.active_connections)}")
+
+    async def send(self, message: dict, user_id: str):
+        ws = self.active_connections.get(user_id)
+        if ws:
+            await ws.send_json(message)
+
     async def find_match(self, user_id: str):
-        """Request match from Matching Service"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{MATCHING_SERVICE_URL}/match/find",
-                    json={"user_token": user_id},
-                    timeout=5.0
-                )
-                match_data = response.json()
-                
-                if match_data["status"] == "matched":
-                    peer_id = match_data["peer_token"]
-                    match_id = match_data["match_id"]
-                    
-                    # Store match
-                    self.user_matches[user_id] = peer_id
-                    self.user_matches[peer_id] = user_id
-                    
-                    # Notify both users
-                    await self.send_personal_message({
-                        "status": "matched",
-                        "peer_id": peer_id,
-                        "match_id": match_id,
-                        "initiator": True
-                    }, user_id)
-                    
-                    await self.send_personal_message({
-                        "status": "matched",
-                        "peer_id": user_id,
-                        "match_id": match_id,
-                        "initiator": False
-                    }, peer_id)
-                else:
-                    # Waiting
-                    await self.send_personal_message({
-                        "status": "waiting",
-                        "msg": "Looking for someone..."
-                    }, user_id)
-        except Exception as e:
-            print(f"❌ Matching Service error: {e}")
-            await self.send_personal_message({
-                "status": "error",
-                "msg": "Matching service unavailable"
-            }, user_id)
-    
-    async def leave_match(self, user_id: str):
-        """Leave current match"""
-        peer_id = self.user_matches.get(user_id)
-        
+        # Leave any existing match first
+        await self._do_leave(user_id)
+
+        result = _queue_find_match(user_id)
+
+        if result["status"] == "matched":
+            peer_id = result["peer_token"]
+            match_id = result["match_id"]
+            self.user_matches[user_id] = peer_id
+            self.user_matches[peer_id] = user_id
+
+            await self.send({"status": "matched", "peer_id": peer_id, "match_id": match_id, "initiator": True}, user_id)
+            await self.send({"status": "matched", "peer_id": user_id, "match_id": match_id, "initiator": False}, peer_id)
+        else:
+            await self.send({"status": "waiting", "msg": "Looking for someone..."}, user_id)
+
+    async def _do_leave(self, user_id: str):
+        """Internal: clean up match state and notify peer."""
+        peer_id = self.user_matches.pop(user_id, None)
         if peer_id:
-            # Notify Matching Service
-            try:
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        f"{MATCHING_SERVICE_URL}/match/leave",
-                        json={"user_token": user_id},
-                        timeout=2.0
-                    )
-            except:
-                pass
-            
-            # Notify peer
-            await self.send_personal_message({
-                "status": "peer_left",
-                "msg": "Your partner has disconnected"
-            }, peer_id)
-            
-            # Cleanup local state
-            self.user_matches.pop(user_id, None)
             self.user_matches.pop(peer_id, None)
+            _queue_leave_match(user_id)
+            await self.send({"status": "peer_left", "msg": "Your partner has disconnected"}, peer_id)
+
 
 manager = ConnectionManager()
 
-# Initialize service
+
 @app.on_event("startup")
 async def startup_event():
+    init_db()
     print("✅ Signaling Service started on port 8001")
 
-# Health check
+
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "service": "signaling",
-        "connections": len(manager.active_connections)
+        "connections": len(manager.active_connections),
+        "queue_backend": "redis" if redis_client else "memory"
     }
 
-# WebSocket endpoint
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = None):
-    """Main WebSocket endpoint for real-time communication"""
-    
-    # Generate or use provided user ID
-    if token:
-        user_id = token
-    else:
-        import uuid
-        user_id = f"user_{str(uuid.uuid4())[:8]}"
-    
-    await manager.connect(websocket, user_id)
-    
-    # Send identity
-    await manager.send_personal_message({
-        "status": "identity",
-        "user_id": user_id
-    }, user_id)
-    
-    try:
-        while True:
-            # Receive JSON data
-            data = await websocket.receive_json()
-            action = data.get("action")
-            
-            if action == "find_match":
-                await manager.find_match(user_id)
-            
-            elif action == "leave_match":
-                await manager.leave_match(user_id)
-            
-            elif action == "chat":
-                # Forward chat message to peer
-                peer_id = manager.user_matches.get(user_id)
-                if peer_id:
-                    await manager.send_personal_message({
-                        "status": "chat",
-                        "msg": data.get("msg"),
-                        "sender": "peer"
-                    }, peer_id)
-            
-            elif action == "signal":
-                # WebRTC signaling (offer, answer, ICE candidates)
-                peer_id = manager.user_matches.get(user_id)
-                if peer_id:
-                    signal_data = {
-                        "status": "signal",
-                        "signal_type": data.get("signal_type"),
-                        "signal_data": data.get("signal_data")
-                    }
-                    await manager.send_personal_message(signal_data, peer_id)
-    
-    except WebSocketDisconnect:
-        await manager.leave_match(user_id)
-        manager.disconnect(user_id)
-    except Exception as e:
-        print(f"❌ WebSocket error for {user_id}: {e}")
-        await manager.leave_match(user_id)
-        manager.disconnect(user_id)
 
-# Stats endpoint
 @app.get("/stats")
 async def get_stats():
-    """Get connection statistics"""
     return {
         "active_connections": len(manager.active_connections),
         "active_matches": len(manager.user_matches) // 2,
         "users_online": list(manager.active_connections.keys())
     }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    user_id = token if token else f"user_{str(uuid.uuid4())[:8]}"
+
+    await manager.connect(websocket, user_id)
+    await manager.send({"status": "identity", "user_id": user_id}, user_id)
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            action = data.get("action")
+
+            if action == "find_match":
+                await manager.find_match(user_id)
+
+            elif action == "chat":
+                peer_id = manager.user_matches.get(user_id)
+                if peer_id:
+                    msg = data.get("msg")
+                    await manager.send({"status": "chat", "msg": msg, "sender": "peer"}, peer_id)
+                    await manager.send({"status": "chat", "msg": msg, "sender": "me"}, user_id)
+
+            elif action == "signal":
+                peer_id = manager.user_matches.get(user_id)
+                if peer_id:
+                    await manager.send({
+                        "status": "signal",
+                        "sender": user_id,
+                        "payload": data.get("payload")
+                    }, peer_id)
+
+    except WebSocketDisconnect:
+        await manager._do_leave(user_id)
+        manager.disconnect(user_id)
+    except Exception as e:
+        print(f"❌ WebSocket error for {user_id}: {e}")
+        await manager._do_leave(user_id)
+        manager.disconnect(user_id)
+
 
 if __name__ == "__main__":
     import uvicorn
